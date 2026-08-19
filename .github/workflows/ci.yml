@@ -114,7 +114,7 @@ jobs:
       # always needed regardless of the repo's language.
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       # Node is only needed for the JS/TS lint hooks (eslint); skip it on
       # Python/Rust-only repos so they don't pull an unused toolchain.
       - uses: actions/setup-node@v6
