@@ -24,6 +24,12 @@ name: CI
 
 on:
   workflow_call:
+    inputs:
+      allow-no-tests:
+        description: "Allow pytest exit 5 only for callers that intentionally have no tests."
+        required: false
+        type: boolean
+        default: false
     secrets:
       SOCKET_SECURITY_API_KEY:
         required: false
@@ -177,31 +183,32 @@ jobs:
             uv sync --all-extras
             uv pip install pytest pytest-cov bandit pip-audit
           elif [ -f pyproject.toml ]; then
-            pip install -e ".[dev]" || pip install -e .
+            pip install -e ".[dev]"
             pip install pytest pytest-cov bandit pip-audit
           elif [ -f requirements.txt ]; then
             pip install -r requirements.txt
             pip install pytest pytest-cov bandit pip-audit
           fi
       - name: Run pytest
+        # Always use pytest discovery/configuration, regardless of test location.
+        # Testless callers must opt in with `with: { allow-no-tests: true }`.
+        # This permits only exit 5; all other pytest errors remain blocking.
+        env:
+          ALLOW_NO_TESTS: ${{ inputs.allow-no-tests }}
         run: |
-          if [ -d tests ] || [ -d test ]; then
-            set +e
-            if [ -f uv.lock ]; then
-              uv run pytest --cov --cov-report=xml
-            else
-              pytest --cov --cov-report=xml
-            fi
-            rc=$?
-            set -e
-            if [ "$rc" -eq 5 ]; then
-              echo "No tests collected (pytest exit 5) — pass-with-note"
-            elif [ "$rc" -ne 0 ]; then
-              echo "::error::pytest failed (exit $rc)"
-              exit "$rc"
-            fi
+          set +e
+          if [ -f uv.lock ]; then
+            uv run pytest --cov --cov-report=xml
           else
-            echo "No tests directory — skipping pytest"
+            pytest --cov --cov-report=xml
+          fi
+          rc=$?
+          set -e
+          if [ "$rc" -eq 5 ] && [ "$ALLOW_NO_TESTS" = "true" ]; then
+            echo "::notice::No tests collected (pytest exit 5); allow-no-tests explicitly enabled"
+          elif [ "$rc" -ne 0 ]; then
+            echo "::error::pytest failed (exit $rc)"
+            exit "$rc"
           fi
       - name: Run bandit (Python security scan)
         run: |
