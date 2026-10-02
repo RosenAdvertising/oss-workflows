@@ -24,6 +24,12 @@ name: CI
 
 on:
   workflow_call:
+    inputs:
+      allow-no-tests:
+        description: "Allow pytest exit 5 only for callers that intentionally have no tests."
+        required: false
+        type: boolean
+        default: false
     secrets:
       SOCKET_SECURITY_API_KEY:
         required: false
@@ -103,35 +109,47 @@ jobs:
     needs: detect
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check for pre-commit config
+        id: pre_commit_config
+        run: |
+          if [ -f .pre-commit-config.yaml ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no .pre-commit-config.yaml — pre-commit skipped"
+          fi
       # Python is the pre-commit runtime (pip install pre-commit below), so it is
       # always needed regardless of the repo's language.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: steps.pre_commit_config.outputs.present == 'true'
         with:
           python-version: "3.14"
       # Node is only needed for the JS/TS lint hooks (eslint); skip it on
       # Python/Rust-only repos so they don't pull an unused toolchain.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        if: needs.detect.outputs.js == 'true'
+        if: steps.pre_commit_config.outputs.present == 'true' && needs.detect.outputs.js == 'true'
         with:
           node-version: "24"
       # Rust toolchain so the rustfmt/clippy advisory hooks resolve on Rust repos;
       # without it they error in the advisory step (harmless but noisy log red).
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-        if: needs.detect.outputs.rust == 'true'
+        if: steps.pre_commit_config.outputs.present == 'true' && needs.detect.outputs.rust == 'true'
       # JS/TS repos: install node deps so the eslint pre-commit hook
       # (`npx --no-install eslint`) can resolve a locally-installed eslint.
       # Gated on detect so Python/Rust-only repos skip it. npm ci is used for a
       # clean, lockfile-pinned install; falls back to npm install if out of sync.
       - name: Install node deps (JS/TS lint hooks)
-        if: needs.detect.outputs.js == 'true'
+        if: steps.pre_commit_config.outputs.present == 'true' && needs.detect.outputs.js == 'true'
         run: npm ci || npm install
-      - run: pip install pre-commit
+      - if: steps.pre_commit_config.outputs.present == 'true'
+        run: pip install pre-commit
       # Structural / safety hooks BLOCK — malformed YAML/JSON/TOML, committed
       # merge-conflict markers, oversized files, and private keys must fail CI.
       # Only style/format is demoted to advisory. Style hooks are SKIP-listed here
       # (they run in the advisory step below); SKIP silently ignores any hook a
       # given repo doesn't define.
       - name: pre-commit — structural / safety (blocking)
+        if: steps.pre_commit_config.outputs.present == 'true'
         env:
           SKIP: trailing-whitespace,end-of-file-fixer,mixed-line-ending,markdownlint,typos,ruff,ruff-format,pyright,prettier,eslint,rustfmt,clippy
         run: pre-commit run --all-files --show-diff-on-failure
@@ -139,6 +157,7 @@ jobs:
       # main. The same hooks auto-FIX locally on commit, which is where formatting
       # belongs. This is the gate right-size — style is a local convenience.
       - name: pre-commit — style / format (advisory)
+        if: steps.pre_commit_config.outputs.present == 'true'
         run: pre-commit run --all-files --show-diff-on-failure
         continue-on-error: true
 
@@ -160,24 +179,52 @@ jobs:
         run: uv python install 3.12
       - name: Install deps
         run: |
-          if [ -f pyproject.toml ]; then
-            uv sync --all-extras || pip install -e .
+          if [ -f uv.lock ]; then
+            uv sync --all-extras
+            uv pip install pytest pytest-cov bandit pip-audit
+          elif [ -f pyproject.toml ]; then
+            pip install -e ".[dev]"
+            pip install pytest pytest-cov bandit pip-audit
           elif [ -f requirements.txt ]; then
             pip install -r requirements.txt
+            pip install pytest pytest-cov bandit pip-audit
           fi
-          pip install pytest pytest-cov bandit pip-audit
       - name: Run pytest
+        # Always use pytest discovery/configuration, regardless of test location.
+        # Testless callers must opt in with `with: { allow-no-tests: true }`.
+        # This permits only exit 5; all other pytest errors remain blocking.
+        env:
+          ALLOW_NO_TESTS: ${{ inputs.allow-no-tests }}
         run: |
-          if [ -d tests ] || [ -d test ]; then
-            pytest --cov --cov-report=xml || echo "No tests collected"
+          set +e
+          if [ -f uv.lock ]; then
+            uv run pytest --cov --cov-report=xml
           else
-            echo "No tests directory — skipping pytest"
+            pytest --cov --cov-report=xml
+          fi
+          rc=$?
+          set -e
+          if [ "$rc" -eq 5 ] && [ "$ALLOW_NO_TESTS" = "true" ]; then
+            echo "::notice::No tests collected (pytest exit 5); allow-no-tests explicitly enabled"
+          elif [ "$rc" -ne 0 ]; then
+            echo "::error::pytest failed (exit $rc)"
+            exit "$rc"
           fi
       - name: Run bandit (Python security scan)
-        run: bandit -r . -x ./tests,./test,./.venv,./venv,./node_modules -ll || true
+        run: |
+          if [ -f uv.lock ]; then
+            uv run bandit -r . -x ./tests,./test,./.venv,./venv,./node_modules -ll || true
+          else
+            bandit -r . -x ./tests,./test,./.venv,./venv,./node_modules -ll || true
+          fi
         continue-on-error: true
       - name: Run pip-audit (dependency CVE scan)
-        run: pip-audit --strict || true
+        run: |
+          if [ -f uv.lock ]; then
+            uv run pip-audit --strict || true
+          else
+            pip-audit --strict || true
+          fi
         continue-on-error: true
 
   js:
