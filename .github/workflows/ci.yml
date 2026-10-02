@@ -132,7 +132,7 @@ jobs:
           node-version: "24"
       # Rust toolchain so the rustfmt/clippy advisory hooks resolve on Rust repos;
       # without it they error in the advisory step (harmless but noisy log red).
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         if: steps.pre_commit_config.outputs.present == 'true' && needs.detect.outputs.rust == 'true'
       # JS/TS repos: install node deps so the eslint pre-commit hook
       # (`npx --no-install eslint`) can resolve a locally-installed eslint.
@@ -276,7 +276,7 @@ jobs:
     if: needs.detect.outputs.rust == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       - run: cargo test --all-features
       - run: cargo clippy --all-targets -- -D warnings
 
